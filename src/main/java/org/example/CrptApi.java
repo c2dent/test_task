@@ -15,24 +15,26 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
-public class CrptApi {
+interface CrptDocument {
+	public String createRFDocument(org.example.CrptApi.Document document, String signature);
+}
+
+public class CrptApi implements CrptDocument {
     private final int requestLimit;
     private final long timeInMillis;
-    private final AtomicInteger requestCount;
-    private final Lock requestLock;
     private long lastResetTime;
-    private final HttpClient client = HttpClient.newHttpClient(); // Лучше создать отдельный класс с конфигурацией авторизации и обработкой ошибок.
+    private final AtomicInteger requestCount = new AtomicInteger(0);;
+    private final Lock requestLock = new ReentrantLock();
+    private final HttpClient client = HttpClient.newHttpClient(); // todo Лучше создать отдельный класс с конфигурацией авторизации и обработкой ошибок.
     private final Gson gson = new Gson();
 
     public CrptApi(TimeUnit timeUnit, int requestLimit) {
         this.timeInMillis = timeUnit.toMillis(1);
         this.requestLimit = requestLimit;
-        this.requestCount = new AtomicInteger(0);
-        this.requestLock = new ReentrantLock();
-        this.lastResetTime = System.currentTimeMillis();
     }
 
-    public String createRFDocument(Document document, String signature) throws InterruptedException, IOException {
+    @Override
+    public String createRFDocument(Document document, String signature) {
         waitForRequestLimit();
 
         Map<String, String> bodyMap = Map.of(
@@ -41,20 +43,27 @@ public class CrptApi {
                 "type", document.getType().name(),
                 "signature", signature
         );
+        
+        try {
+        	HttpResponse<String> response = sendPostRequest(bodyMap, UrlConstants.LK_DOCUMENTS_RF_CREATE + "?pg=" + document.getProductGroup());
 
-        HttpResponse<String> response = sendPostRequest(bodyMap, UrlConstants.LK_DOCUMENTS_RF_CREATE + "?pg=" + document.getProductGroup());
-        if (response.statusCode() == 200) {
-            Type mapType = new TypeToken<Map<String, String>>() {}.getType();
-            Map<String, String> resultMap = new Gson().fromJson(response.body(), mapType);
-            return resultMap.get("value");
-        } else {
-            System.out.println(response.statusCode() + " " + response.body());
+            if (response.statusCode() == 200) {
+                Type mapType = new TypeToken<Map<String, String>>() {}.getType();
+                Map<String, String> resultMap = new Gson().fromJson(response.body(), mapType);
+                return resultMap.get("value");
+            } else {
+                System.out.println(response.statusCode() + " " + response.body());
+                return null;
+            }
+
+		} catch (Exception e) {
+            System.out.println(e.getMessage());
             return null;
-        }
+		}
     }
 
-    private HttpResponse<String> sendPostRequest(Map<String, String> body, String url) throws IOException, InterruptedException { // Этот метод также следует реализовать в классе HttpClient.
-        String bearerToken = "";
+    private HttpResponse<String> sendPostRequest(Map<String, String> body, String url) throws IOException, InterruptedException { // todo Этот метод также следует реализовать в классе HttpClient.
+        String bearerToken = ""; // todo 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create("https://ismp.crpt.ru/api/v3/" + url))
                 .header("Content-Type", "application/json")
@@ -67,8 +76,8 @@ public class CrptApi {
     private void waitForRequestLimit() {
         while (true) {
             requestLock.lock();
+            long currentTime = System.currentTimeMillis();
             try {
-                long currentTime = System.currentTimeMillis();
                 if (currentTime - lastResetTime >= timeInMillis) {
                     requestCount.set(0);
                     lastResetTime = currentTime;
@@ -83,7 +92,7 @@ public class CrptApi {
             }
 
             try {
-                Thread.sleep(100);
+                Thread.sleep(currentTime - lastResetTime);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
